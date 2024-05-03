@@ -1,0 +1,3 @@
+[submodule "a2tc"]
+	path = a2tc
+	url = git@bitbucket.org:cjp20/a2tc.git

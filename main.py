@@ -1,0 +1,140 @@
+import os
+from multiprocessing import Pool, cpu_count
+from subprocess import Popen, PIPE, DEVNULL
+from typing import Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.optimize import minimize
+
+A2TC_EXE = os.path.join(os.path.dirname(__file__), "a2tc", "bin", "a2tc")
+K_TO_THZ = 0.02083661330386207
+THZ_TO_K = 1.0 / K_TO_THZ
+
+
+def normalize(omega: np.ndarray, a2f: np.ndarray, to_lambda: float = 1.0) -> np.ndarray:
+    i_safe = omega > 1e-5
+    lam = np.trapz(a2f[i_safe] / omega[i_safe], x=omega[i_safe]) * 2
+    return to_lambda * a2f / lam
+
+
+def calculate_lambda_tc(omega: np.ndarray, a2f: np.ndarray, mu_star: float = 0.125) -> Tuple[float, float]:
+    in_pipe = "# E(THz) 0.00\n"
+    for w, a in zip(omega, a2f):
+        in_pipe += f"{w} {a}\n"
+
+    p = Popen([A2TC_EXE, "-q", "-force", "-precision", "-nsig", "1", "-mustar", str(mu_star)],
+              stdin=PIPE, stdout=PIPE, stderr=DEVNULL)
+    output = p.communicate(input=in_pipe.encode("utf-8"))[0].decode()
+    data = [float(x) for x in output.split()]
+
+    return data[0], data[-2]
+
+
+def a2f_guassian_peak(peak_temperature: float,
+                      lambda_value: float = 1.0,
+                      n_points: int = 1024,
+                      frac_width: float = 0.01) -> Tuple[
+    np.ndarray, np.ndarray]:
+    omega = np.linspace(0, peak_temperature * 2, n_points)
+    a2f = np.exp(-((omega - peak_temperature) / (frac_width * peak_temperature)) ** 2)
+
+    omega *= K_TO_THZ
+    a2f = normalize(omega, a2f, to_lambda=lambda_value)
+
+    return omega, a2f
+
+
+def tc_of_guassian_peak(peak_temperature: float, lambda_value: float = 1.0):
+    lam, tc = calculate_lambda_tc(*a2f_guassian_peak(peak_temperature, lambda_value=lambda_value))
+    print(lam, lambda_value)
+    assert abs(lam - lambda_value) < 0.01
+    return tc
+
+
+def guassian_peak_plot():
+    peak_t = np.linspace(100, 20000, 10)
+    for lam in [0.5, 1.0, 1.5, 2.0]:
+        with Pool(cpu_count()) as p:
+            tcs = p.starmap(tc_of_guassian_peak, [[t, lam] for t in peak_t])
+        gradient = tcs[-1] / peak_t[-1]
+        plt.plot(peak_t, tcs, label=f"Lambda = {lam:.1f} (gradient = {gradient:.3f})")
+    plt.xlabel(r"Location of Guassian peak in $\alpha^2F(\omega)$ (K)")
+    plt.ylabel(r"$T_c$ from solution of" + "\n" + r"Eliashberg equations ($\mu*$ = 0.125) (K)")
+    plt.legend()
+    plt.show()
+
+class A2FOptimizer:
+
+    def __init__(self, omega: np.ndarray):
+        self._omega = omega
+        self._history = []
+
+    def sqrt_to_a2f(self, sqrt_a2f: np.ndarray) -> np.ndarray:
+        a2f = sqrt_a2f ** 2
+        lam, tc = calculate_lambda_tc(self._omega, a2f)
+        return a2f / lam
+
+    def objective(self, sqrt_a2f: np.ndarray) -> float:
+        a2f = self.sqrt_to_a2f(sqrt_a2f)
+        lam, tc = calculate_lambda_tc(self._omega, a2f)
+        assert abs(lam - 1.0) < 0.05, f"Lambda deviation: lambda = {lam}"
+        return -tc
+
+    def delta_objective(self, sqrt_a2f: np.ndarray, i: int, eps: float):
+        sqrt_a2f[i] += eps
+        result = self.objective(sqrt_a2f)
+        sqrt_a2f[i] -= eps
+        return result
+
+    def gradient(self, sqrt_a2f: np.ndarray) -> np.ndarray:
+        eps = 1e-5
+        obj_0 = self.objective(sqrt_a2f)
+        with Pool(cpu_count()) as p:
+            obj_plus = p.starmap(self.delta_objective, [[sqrt_a2f, i, eps] for i in range(len(sqrt_a2f))])
+        return (np.array(obj_plus) - obj_0) / eps
+
+    def callback(self, x: np.ndarray):
+        a2f = self.sqrt_to_a2f(x)
+        lam, tc = calculate_lambda_tc(self._omega, a2f)
+        self._history.append([lam, tc, a2f.copy()])
+
+        plt.figure("Tc")
+        plt.clf()
+        plt.plot([t for l, t, a in self._history])
+        plt.xlabel("Iteration")
+        plt.ylabel("$T_c$")
+
+        plt.figure("lambda")
+        plt.clf()
+        plt.plot([l for l, t, a in self._history])
+        plt.xlabel("Iteration")
+        plt.ylabel(r"$\lambda$")
+
+        plt.figure("a2F")
+        plt.clf()
+        for i, (l, t, a) in enumerate(self._history):
+            c = (i + 1) / len(self._history)
+            c = (c, 1 - c, 0)
+            plt.plot(self._omega * THZ_TO_K, a, color=c)
+
+        plt.xlabel(r"$\omega$ (K)")
+        plt.ylabel(r"$\alpha^2F(\omega)$")
+        plt.pause(0.5)
+
+def optimize_a2f():
+
+
+    plt.ion()
+    omega, a2f = a2f_guassian_peak(3000, n_points=128, frac_width=0.1)
+
+    a2f[:] = 1.0
+    sqrt_a2f = a2f ** 0.5
+    a2f_opt = A2FOptimizer(omega)
+
+    a2f_opt.callback(sqrt_a2f)
+    minimize(a2f_opt.objective, x0=sqrt_a2f, jac=a2f_opt.gradient, callback=a2f_opt.callback)
+
+
+if __name__ == "__main__":
+    optimize_a2f()
