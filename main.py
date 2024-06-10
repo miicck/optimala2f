@@ -95,19 +95,31 @@ def guassian_peak_plot():
 
 class A2FOptimizer:
 
-    def __init__(self, omega: np.ndarray):
+    def __init__(self, omega: np.ndarray, attenuation_k: float = 300, fix_lambda: float = 1.0):
         self._omega = omega
+        self._attenuation_k = attenuation_k
+        self._fix_lambda = fix_lambda
         self._history = []
 
     def sqrt_to_a2f(self, sqrt_a2f: np.ndarray) -> np.ndarray:
+
+        # Enforce positive a2f
         a2f = sqrt_a2f ** 2
+
+        # Enforce a2f that smoothly goes to zero
+        x1 = (self._omega - max(self._omega)) / (self._attenuation_k * K_TO_THZ)
+        x2 = (self._omega) / (self._attenuation_k * K_TO_THZ)
+        att = (1 - np.exp(-x1 ** 2)) * (1 - np.exp(-x2 ** 2))
+
+        a2f *= att
+
         lam, tc = calculate_lambda_tc(self._omega, a2f)
-        return a2f / lam
+        return a2f * self._fix_lambda / lam
 
     def objective(self, sqrt_a2f: np.ndarray) -> float:
         a2f = self.sqrt_to_a2f(sqrt_a2f)
         lam, tc = calculate_lambda_tc(self._omega, a2f)
-        assert abs(lam - 1.0) < 0.05, f"Lambda deviation: lambda = {lam}"
+        assert abs(lam - self._fix_lambda) < 0.05, f"Lambda deviation: lambda = {lam}"
         return -tc
 
     def delta_objective(self, sqrt_a2f: np.ndarray, i: int, eps: float):
@@ -153,12 +165,15 @@ class A2FOptimizer:
 
 
 def optimize_a2f():
-    plt.ion()
-    omega, a2f = a2f_guassian_peak(3000, n_points=128, frac_width=0.1)
+    max_w = 3680
+    att_k = 300
 
-    a2f[:] = 1.0
+    plt.ion()
+    omega = np.linspace(0, (max_w + att_k) * K_TO_THZ, 256)
+    a2f = np.ones_like(omega)
+
     sqrt_a2f = a2f ** 0.5
-    a2f_opt = A2FOptimizer(omega)
+    a2f_opt = A2FOptimizer(omega, attenuation_k=att_k, fix_lambda=2.0)
 
     a2f_opt.callback(sqrt_a2f)
     minimize(a2f_opt.objective, x0=sqrt_a2f, jac=a2f_opt.gradient, callback=a2f_opt.callback)
@@ -329,4 +344,5 @@ def introduction_of_soft_modes():
 
 
 if __name__ == "__main__":
-    introduction_of_soft_modes()
+    optimize_a2f()
+    # introduction_of_soft_modes()
