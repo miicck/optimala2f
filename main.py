@@ -220,8 +220,8 @@ def optimize_a2f():
     a2f = np.ones_like(omega)
 
     sqrt_a2f = a2f ** 0.5
-    #a2f_opt = A2FOptimizerFixedLambda(omega, attenuation_k=att_k, fix_lambda=2.0)
-    a2f_opt = A2FOptimizerFixedOmegaLog(omega, attenuation_k=att_k, fix_omega_log_k=600)
+    a2f_opt = A2FOptimizerFixedLambda(omega, attenuation_k=att_k, fix_lambda=2.0)
+    #a2f_opt = A2FOptimizerFixedOmegaLog(omega, attenuation_k=att_k, fix_omega_log_k=600)
 
     a2f_opt.callback(sqrt_a2f)
     minimize(a2f_opt.objective, x0=sqrt_a2f, jac=a2f_opt.gradient, callback=a2f_opt.callback)
